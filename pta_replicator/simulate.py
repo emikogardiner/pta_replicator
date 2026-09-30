@@ -9,13 +9,15 @@ import os
 from dataclasses import dataclass
 from astropy.time import TimeDelta
 from astropy.time.core import Time
-from astropy import units as u
+import astropy.units as u
 import numpy as np
 
 from pint.residuals import Residuals
 import pint.toa as toa
 from pint import models
+from pint.simulation import make_fake_toas_fromMJDs
 import pint.fitter
+import tqdm
 
 from enterprise.pulsar import Pulsar
 
@@ -33,6 +35,7 @@ class SimulatedPulsar:
     name: str = None
     loc: dict = None
     added_signals: dict = None
+    added_signals_time: dict = None
 
     def __repr__(self):
         return f"SimulatedPulsar({self.name})"
@@ -76,19 +79,63 @@ class SimulatedPulsar:
         else:
             self.toas.write_TOA_file(outtim)
 
-    def update_added_signals(self, signal_name, param_dict):
+    def update_added_signals(self, signal_name, param_dict, dt=None):
         """
         Update the timing model with a new signal
         """
+        if self.added_signals is None: #this is first set to None and then to empty dict if make_ideal() is called - so good way to check if that was done
+            raise ValueError("make_ideal() must be called on SimulatedPulsar before adding new signals.")
         if signal_name in self.added_signals:
             raise ValueError(f"{signal_name} already exists in the model.")
         self.added_signals[signal_name] = param_dict
+        if dt is not None:
+            self.added_signals_time[signal_name] = dt
 
     def to_enterprise(self, ephem='DE440'):
         """
         Convert to enterprise PintPulsar object
         """
         return Pulsar(self.toas, self.model, ephem=ephem, timing_package='pint')
+
+
+def simulate_pulsar(parfile: str, obstimes, toaerr, freq=1440.0, observatory="AXIS", flags=None, ephem:str = 'DE440') -> SimulatedPulsar:
+    """
+    Create a SimulatedPulsar object from a par file and a list of toas
+
+    Parameters
+    ----------
+    parfile : str
+        Path to par file
+    obstimes : array
+        List of observation times [MJD]
+    toaerr : float or array
+        Measurement error - either a common error, or a list of errors of the same length as obstimes [us]
+    freq : float or array, optional
+        Observation frequency - either a common value or a list [MHz]
+    observatory : str, optional
+        Observatory for fake toas
+    """
+    if not os.path.isfile(parfile):
+        raise FileNotFoundError("par file does not exist.")
+
+    model = models.get_model(parfile)
+    toas = make_fake_toas_fromMJDs(obstimes, model,
+                                   freq=freq * u.MHz,
+                                   obs=observatory,
+                                   flags=flags,
+                                   error=toaerr * u.us)
+    residuals = Residuals(toas, model)
+    name = model.PSR.value
+
+    if hasattr(model, 'RAJ') and hasattr(model, 'DECJ'):
+        loc = {'RAJ': model.RAJ.value, 'DECJ': model.DECJ.value}
+    elif hasattr(model, 'ELONG') and hasattr(model, 'ELAT'):
+        loc = {'ELONG': model.ELONG.value, 'ELAT': model.ELAT.value}
+    else:
+        raise AttributeError("No pulsar location information (RAJ/DECJ or ELONG/ELAT) in parfile.")
+    
+
+    return SimulatedPulsar(ephem=ephem, model=model, toas=toas, residuals=residuals, name=name, loc=loc)
 
 
 def load_pulsar(parfile: str, timfile: str, ephem:str = 'DE440') -> SimulatedPulsar:
@@ -154,6 +201,7 @@ def make_ideal(psr: SimulatedPulsar, iterations: int = 2):
         residuals = Residuals(psr.toas, psr.model)
         psr.toas.adjust_TOAs(TimeDelta(-1.0*residuals.time_resids))
     psr.added_signals = {}
+    psr.added_signals_time = {}
     psr.update_residuals()
 
 
