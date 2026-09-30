@@ -349,7 +349,7 @@ def shorten_pulsar_duration(psr: SimulatedPulsar, end_mjd, make_new = False, deb
 
     else:
         # limit the toas 
-        psr.toas = psr.toas[psr.toas.get_mjds() < (end_mjd*u.d)]
+        psr.toas = psr.toas[psr.toas.get_mjds() <= (end_mjd*u.d)]
         # update the residuals to include all the new ones
         psr.update_residuals()
         return 
